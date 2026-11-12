@@ -55,6 +55,23 @@ class VariationalStellaratorTwoPointModel():
         T = np.maximum(T, 1e-12)
         return (self.q_x * theta) / (self.kappa_0e * T**2.5 * theta**2 + perp_coeff)
 
+    def T_of_ell(self, ell, Td, nu):
+        """Integrate the temperature from the target value Td to position ell."""
+        ell = float(ell)
+        if not self.ell_0 <= ell <= self.ell_1:
+            raise ValueError(f"ell must be within [{self.ell_0}, {self.ell_1}]")
+        if ell == self.ell_0:
+            return float(Td)
+
+        nd = self.nd_of_Td(Td)
+        perp_coeff = self.chi * (nu + nd) * c.e / 2
+        sol = solve_ivp(self.dT_dl, (self.ell_0, ell), [Td],
+                        args=(perp_coeff,), t_eval=[ell],
+                        method=self.method, rtol=self.rtol, atol=self.atol)
+        if not sol.success:
+            raise RuntimeError(f"ODE integration failed: {sol.message}")
+        return float(sol.y[0, -1])
+
     def Tu_ode(self, Td, nu):
         Td = np.atleast_1d(np.asarray(Td, dtype=float))
         nu = np.atleast_1d(np.asarray(nu, dtype=float))
@@ -153,6 +170,7 @@ class VariationalStellaratorTwoPointModel():
         Td = np.sqrt(lo * hi)
         out = self._state(Td, nu)
         return {k: np.where(unbracketed, np.nan, v) for k, v in out.items()}
+    
 
 def vstpm_scan(theta, ell, n_u, gamma, chi, alpha, q_x):
     """The VSTPM over the upstream densities n_u for the pitch profile theta(ell), ell in
