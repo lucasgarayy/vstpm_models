@@ -106,6 +106,39 @@ class VariationalStellaratorTwoPointModel():
             raise RuntimeError(f"ODE integration failed: {sol.message}")
         return sol.y[:, -1].reshape(Td.shape)
 
+    def T_profile(self, Td, nu):
+        """Temperature on ell_arr for every (Td, nu); shape broadcast(Td, nu).shape + (len(ell_arr),)."""
+        Td, nu = np.broadcast_arrays(np.asarray(Td, dtype=float), np.asarray(nu, dtype=float))
+        shape = Td.shape
+        Td, nu = Td.ravel(), nu.ravel()
+        perp_coeff = self.chi * (nu + self.nd_of_Td(Td)) * c.e / 2
+        sol = solve_ivp(self.dT_dl, (self.ell_0, self.ell_1), Td,
+                        args=(perp_coeff,), t_eval=self.ell_arr,
+                        method=self.method, rtol=self.rtol, atol=self.atol)
+        if not sol.success:
+            raise RuntimeError(f"ODE integration failed: {sol.message}")
+        return sol.y.reshape(shape + (self.ell_arr.size,))
+
+    def t_star_ell(self, nu, nd, T):
+        """t* = sqrt(perp/para) = sqrt(chi * n_avg * e / (kappa_0e * T**(5/2))), n_avg = (nu + nd)/2.
+
+        Same perpendicular coefficient as the ODE (dT_dl), so that the ODE
+        denominator reads kappa_0e * T**2.5 * (theta**2 + t*(T)**2).
+        """
+        perp = self.chi * (nu + nd) * c.e / 2
+        para = self.kappa_0e * np.maximum(T, 1e-12)**2.5
+        return np.sqrt(perp / para)
+
+    def t_star_profile(self, T_ell, nu, nd):
+        """t* on ell_arr from a temperature profile T_ell of shape (..., len(ell_arr)).
+
+        nu and nd broadcast against the leading dimensions of T_ell.
+        """
+        T_ell = np.asarray(T_ell, dtype=float)
+        nu = np.asarray(nu, dtype=float)[..., None]
+        nd = np.asarray(nd, dtype=float)[..., None]
+        return self.t_star_ell(nu, nd, T_ell)
+
     def residual(self, Td, nu):
         return self.Tu_ode(Td, nu) - self.Tu_mom(Td, nu)
 
@@ -133,19 +166,6 @@ class VariationalStellaratorTwoPointModel():
         self.Td_sol, self.nu_sol = float(Td), float(nu)   # used by T_of_ell defaults
         return self._state(Td, nu)
 
-    def T_profile(self, Td, nu):
-        """Temperature on ell_arr for every (Td, nu); shape broadcast(Td, nu).shape + (len(ell_arr),)."""
-        Td, nu = np.broadcast_arrays(np.asarray(Td, dtype=float), np.asarray(nu, dtype=float))
-        shape = Td.shape
-        Td, nu = Td.ravel(), nu.ravel()
-        perp_coeff = self.chi * (nu + self.nd_of_Td(Td)) * c.e / 2
-        sol = solve_ivp(self.dT_dl, (self.ell_0, self.ell_1), Td,
-                        args=(perp_coeff,), t_eval=self.ell_arr,
-                        method=self.method, rtol=self.rtol, atol=self.atol)
-        if not sol.success:
-            raise RuntimeError(f"ODE integration failed: {sol.message}")
-        return sol.y.reshape(shape + (self.ell_arr.size,))
-
     def _state(self, Td, nu):
         nd = self.nd_of_Td(Td)
         T_ell = self.T_profile(Td, nu)
@@ -159,6 +179,8 @@ class VariationalStellaratorTwoPointModel():
         # temperature along the field line, [..., len(ell)] on ell_arr
         out["ell"] = self.ell_arr.copy()
         out["T_ell"] = T_ell
+        # t* = sqrt(perp/para) along the field line, [..., len(ell)] on ell_arr
+        out["t_star_ell"] = self.t_star_profile(T_ell, nu, nd)
         return out
 
     def scan(self, nu_array, lo=1e-3, hi=1e2, lo_min=1e-8, hi_max=1e5,
