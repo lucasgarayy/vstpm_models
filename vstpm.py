@@ -55,22 +55,40 @@ class VariationalStellaratorTwoPointModel():
         T = np.maximum(T, 1e-12)
         return (self.q_x * theta) / (self.kappa_0e * T**2.5 * theta**2 + perp_coeff)
 
-    def T_of_ell(self, ell, Td, nu):
-        """Integrate the temperature from the target value Td to position ell."""
-        ell = float(ell)
-        if not self.ell_0 <= ell <= self.ell_1:
-            raise ValueError(f"ell must be within [{self.ell_0}, {self.ell_1}]")
-        if ell == self.ell_0:
-            return float(Td)
+    def T_of_ell(self, ell, Td=None, nu=None):
+        """Temperature [eV] along the field line, integrated from the target (ell_0, Td).
 
-        nd = self.nd_of_Td(Td)
-        perp_coeff = self.chi * (nu + nd) * c.e / 2
-        sol = solve_ivp(self.dT_dl, (self.ell_0, ell), [Td],
-                        args=(perp_coeff,), t_eval=[ell],
-                        method=self.method, rtol=self.rtol, atol=self.atol)
-        if not sol.success:
-            raise RuntimeError(f"ODE integration failed: {sol.message}")
-        return float(sol.y[0, -1])
+        ell may be a scalar or an array (any order, in [ell_0, ell_1]); the result has
+        the same shape.  Td and nu default to the last state returned by solve(), so
+        T_of_ell(ell) gives the profile of the solved solution.  The ODE and the
+        perpendicular coefficient are identical to Tu_ode, hence
+        T_of_ell(ell_1) == Tu_ode(Td, nu).
+        """
+        if Td is None: Td = getattr(self, "Td_sol", None)
+        if nu is None: nu = getattr(self, "nu_sol", None)
+        if Td is None or nu is None:
+            raise ValueError("Td and nu must be given, or solve() must be run first")
+        Td, nu = float(Td), float(nu)
+
+        ell = np.asarray(ell, dtype=float)
+        tol = 1e-12 * self.L_c
+        if np.any(ell < self.ell_0 - tol) or np.any(ell > self.ell_1 + tol):
+            raise ValueError(f"ell must be within [{self.ell_0}, {self.ell_1}]")
+        ell_c = np.clip(ell, self.ell_0, self.ell_1)
+
+        ell_eval = np.unique(ell_c.ravel())          # sorted, as t_eval requires
+        T_eval = np.full(ell_eval.shape, Td)
+        if ell_eval[-1] > self.ell_0:
+            perp_coeff = self.chi * (nu + self.nd_of_Td(Td)) * c.e / 2
+            sol = solve_ivp(self.dT_dl, (self.ell_0, ell_eval[-1]), [Td],
+                            args=(perp_coeff,), t_eval=ell_eval,
+                            method=self.method, rtol=self.rtol, atol=self.atol)
+            if not sol.success:
+                raise RuntimeError(f"ODE integration failed: {sol.message}")
+            T_eval = sol.y[0]
+
+        T = T_eval[np.searchsorted(ell_eval, ell_c.ravel())].reshape(ell.shape)
+        return float(T) if T.ndim == 0 else T
 
     def Tu_ode(self, Td, nu):
         Td = np.atleast_1d(np.asarray(Td, dtype=float))
@@ -92,7 +110,7 @@ class VariationalStellaratorTwoPointModel():
         return self.Tu_ode(Td, nu) - self.Tu_mom(Td, nu)
 
     def solve(self, nu, lo=1e-3, hi=1e2, lo_min=1e-8, hi_max=1e5):
-        res = lambda Td: float(self.residual(Td, nu))
+        res = lambda Td: float(self.residual(Td, nu).item())
         f_lo = res(lo)
         f_hi = res(hi)
 
@@ -112,17 +130,35 @@ class VariationalStellaratorTwoPointModel():
                 f"res({lo:.3g})={f_lo:.3g}, res({hi:.3g})={f_hi:.3g}")
 
         Td = brentq(res, lo, hi, xtol=1e-12, rtol=1e-12)
+        self.Td_sol, self.nu_sol = float(Td), float(nu)   # used by T_of_ell defaults
         return self._state(Td, nu)
+
+    def T_profile(self, Td, nu):
+        """Temperature on ell_arr for every (Td, nu); shape broadcast(Td, nu).shape + (len(ell_arr),)."""
+        Td, nu = np.broadcast_arrays(np.asarray(Td, dtype=float), np.asarray(nu, dtype=float))
+        shape = Td.shape
+        Td, nu = Td.ravel(), nu.ravel()
+        perp_coeff = self.chi * (nu + self.nd_of_Td(Td)) * c.e / 2
+        sol = solve_ivp(self.dT_dl, (self.ell_0, self.ell_1), Td,
+                        args=(perp_coeff,), t_eval=self.ell_arr,
+                        method=self.method, rtol=self.rtol, atol=self.atol)
+        if not sol.success:
+            raise RuntimeError(f"ODE integration failed: {sol.message}")
+        return sol.y.reshape(shape + (self.ell_arr.size,))
 
     def _state(self, Td, nu):
         nd = self.nd_of_Td(Td)
-        Tu = self.Tu_ode(Td, nu)
+        T_ell = self.T_profile(Td, nu)
+        Tu = T_ell[..., -1]
         Td, nd, Tu = np.asarray(Td), np.asarray(nd), np.asarray(Tu)
         out = {"Td": Td, "Tu": Tu, "nd": nd, "nu": np.asarray(nu),
             "pd": 2 * nd * Td, "pu": 2 * np.asarray(nu) * Tu,
             "fm": np.asarray(self.f_m(Td)), "csd": np.asarray(self.cs_d(Td))}
         if np.ndim(nu) == 0:
-            return {k: float(v) for k, v in out.items()}
+            out = {k: float(v) for k, v in out.items()}
+        # temperature along the field line, [..., len(ell)] on ell_arr
+        out["ell"] = self.ell_arr.copy()
+        out["T_ell"] = T_ell
         return out
 
     def scan(self, nu_array, lo=1e-3, hi=1e2, lo_min=1e-8, hi_max=1e5,
@@ -169,7 +205,9 @@ class VariationalStellaratorTwoPointModel():
 
         Td = np.sqrt(lo * hi)
         out = self._state(Td, nu)
-        return {k: np.where(unbracketed, np.nan, v) for k, v in out.items()}
+        return {k: v if k == "ell" else
+                np.where(unbracketed.reshape(unbracketed.shape + (1,) * (np.ndim(v) - 1)), np.nan, v)
+                for k, v in out.items()}
     
 
 def vstpm_scan(theta, ell, n_u, gamma, chi, alpha, q_x):
