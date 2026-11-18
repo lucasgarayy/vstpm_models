@@ -4,7 +4,7 @@ from scipy.optimize import brentq
 from scipy.integrate import solve_ivp
 
 class ExpVariationalStellaratorTwoPointModel():
-    def __init__(self, q_par, gamma, chi, alpha, theta_arr, ell_arr, q_x=None, rtol=1e-9, atol=1e-11, method='DOP853'):
+    def __init__(self, q_par, gamma, chi, alpha, theta_arr, ell_arr, q_par_arr = None, q_x=None, rtol=1e-9, atol=1e-11, method='DOP853'):
         self.md = 3.3435837768e-27
         self.kappa_0e = 2000
         self.q_par = q_par
@@ -32,10 +32,17 @@ class ExpVariationalStellaratorTwoPointModel():
 
         self.q_x = self.q_par * self.theta_d if q_x is None else float(q_x)
         self.q_par_target = self.q_x / self.theta_d
+        self.q_par_arr = q_par_arr
 
     def theta_of(self, ell):
         return np.interp(ell, self.ell_arr, self.theta_arr)
 
+    def q_par_of(self, ell):
+        if self.q_par_arr:
+            return np.interp(ell, self.ell_arr, self.q_par_arr)
+        else:
+            return self.q_par_target
+        
     def cs_d(self, Td):
         return np.sqrt(2*(c.e * Td)/self.md)
 
@@ -52,9 +59,10 @@ class ExpVariationalStellaratorTwoPointModel():
 
     def dT_dl(self, ell, T, perp_coeff):
         theta = self.theta_of(ell=ell)
+        q_par = self.q_par_of(ell=ell)
         T = np.maximum(T, 1e-12)
-        return (self.q_par_target * theta**2) / (self.kappa_0e * T**2.5 * theta**2 + perp_coeff)
-
+        return (q_par * theta**2) / (self.kappa_0e * T**2.5 * theta**2 + perp_coeff)
+      
     def T_of_ell(self, ell, Td=None, nu=None):
         """Temperature [eV] along the field line, integrated from the target (ell_0, Td).
 
