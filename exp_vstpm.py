@@ -53,7 +53,7 @@ class ExpVariationalStellaratorTwoPointModel():
     def dT_dl(self, ell, T, perp_coeff):
         theta = self.theta_of(ell=ell)
         T = np.maximum(T, 1e-12)
-        return (self.q_x * theta**2) / (self.kappa_0e * T**2.5 * theta**2 + perp_coeff)
+        return (self.q_par_target * theta**2) / (self.kappa_0e * T**2.5 * theta**2 + perp_coeff)
 
     def T_of_ell(self, ell, Td=None, nu=None):
         """Temperature [eV] along the field line, integrated from the target (ell_0, Td).
