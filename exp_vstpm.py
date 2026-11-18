@@ -38,7 +38,7 @@ class ExpVariationalStellaratorTwoPointModel():
         return np.interp(ell, self.ell_arr, self.theta_arr)
 
     def q_par_of(self, ell):
-        if self.q_par_arr:
+        if self.q_par_arr is not None:
             return np.interp(ell, self.ell_arr, self.q_par_arr)
         else:
             return self.q_par_target
